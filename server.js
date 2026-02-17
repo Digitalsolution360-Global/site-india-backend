@@ -5,6 +5,8 @@ const cors = require('cors');
 const statesRoutes = require('./routes/states');
 const citiesRoutes = require('./routes/cities');
 const marketRoutes = require('./routes/market');
+const authRoutes = require('./routes/auth');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -20,6 +22,8 @@ app.use(express.json());
 app.use('/api/states', statesRoutes);
 app.use('/api/cities', citiesRoutes);
 app.use('/api/market', marketRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 
 // ─── Categories Endpoint ─────────────────────────────────────────
 const db = require('./db');
@@ -55,4 +59,6 @@ app.listen(PORT, () => {
   console.log(`   States:       http://localhost:${PORT}/api/states`);
   console.log(`   Market:       http://localhost:${PORT}/api/market/:category`);
   console.log(`   Cities:       http://localhost:${PORT}/api/cities/:slug`);
+  console.log(`   Auth:         http://localhost:${PORT}/api/auth/login`);
+  console.log(`   Admin:        http://localhost:${PORT}/api/admin/dashboard`);
 });
