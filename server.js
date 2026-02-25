@@ -7,6 +7,7 @@ const citiesRoutes = require('./routes/cities');
 const marketRoutes = require('./routes/market');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const postsRoutes = require('./routes/posts');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -24,6 +25,7 @@ app.use('/api/cities', citiesRoutes);
 app.use('/api/market', marketRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/posts', postsRoutes);
 
 // ─── Categories Endpoint ─────────────────────────────────────────
 const db = require('./db');
@@ -80,4 +82,5 @@ app.listen(PORT, () => {
   console.log(`   Cities:       http://localhost:${PORT}/api/cities/:slug`);
   console.log(`   Auth:         http://localhost:${PORT}/api/auth/login`);
   console.log(`   Admin:        http://localhost:${PORT}/api/admin/dashboard`);
+  console.log(`   Posts:        http://localhost:${PORT}/api/posts`);
 });
