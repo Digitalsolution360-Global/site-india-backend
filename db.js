@@ -146,6 +146,16 @@ async function getStatesWithCitiesByCategory(category) {
   `;
   const allCities = await query(citiesSql, [categoryName]);
 
+  // Also fetch metro cities for each state
+  const metroCitiesSql = `
+    SELECT m.metrocity, m.metrocity_slug, c.state_id
+    FROM metrocitys m
+    JOIN citys c ON m.city_id = c.city_id
+    WHERE m.category_name = ?
+    ORDER BY m.metrocity ASC
+  `;
+  const allMetroCities = await query(metroCitiesSql, [categoryName]);
+
   const cityMap = {};
   allCities.forEach(city => {
     if (!cityMap[city.state_id]) {
@@ -155,6 +165,22 @@ async function getStatesWithCitiesByCategory(category) {
       name: city.city,
       slug: city.city_slug
     });
+  });
+
+  // Merge metro cities into their state's city list
+  allMetroCities.forEach(metro => {
+    if (!cityMap[metro.state_id]) {
+      cityMap[metro.state_id] = [];
+    }
+    cityMap[metro.state_id].push({
+      name: metro.metrocity,
+      slug: metro.metrocity_slug
+    });
+  });
+
+  // Sort each state's city list alphabetically after merging
+  Object.keys(cityMap).forEach(stateId => {
+    cityMap[stateId].sort((a, b) => a.name.localeCompare(b.name));
   });
 
   return states.map(state => ({
