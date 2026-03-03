@@ -181,7 +181,7 @@ async function getStatesWithCitiesByCategory(category) {
   // Sort each state's city list alphabetically after merging
   Object.keys(cityMap).forEach(stateId => {
     cityMap[stateId].sort((a, b) => a.name.localeCompare(b.name));
-  });
+  }); 
 
   return states.map(state => ({
     name: state.name,
