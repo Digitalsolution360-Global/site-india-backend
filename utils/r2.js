@@ -9,6 +9,30 @@ const s3 = new S3Client({
   },
 });
 
+function joinUrl(base, key) {
+  const safeBase = (base || '').replace(/\/+$/, '');
+  const safeKey = (key || '')
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/');
+  return `${safeBase}/${safeKey}`;
+}
+
+function getPublicBaseForBucket(bucket) {
+  if (bucket === process.env.R2_BLOG_BUCKET && process.env.R2_BLOG_PUBLIC_URL) {
+    return process.env.R2_BLOG_PUBLIC_URL;
+  }
+  if (bucket === process.env.R2_RESUME_BUCKET && process.env.R2_RESUME_PUBLIC_URL) {
+    return process.env.R2_RESUME_PUBLIC_URL;
+  }
+
+  if (process.env.R2_PUBLIC_URL) {
+    return process.env.R2_PUBLIC_URL;
+  }
+
+  return '';
+}
+
 /**
  * Upload a file buffer to an R2 bucket
  * @param {Buffer} fileBuffer - The file content
@@ -25,7 +49,12 @@ async function uploadToR2(fileBuffer, key, bucket, contentType) {
     ContentType: contentType,
   }));
 
-  // Return the S3 endpoint-based URL (works if public access is enabled)
+  const publicBase = getPublicBaseForBucket(bucket);
+  if (publicBase) {
+    return joinUrl(publicBase, key);
+  }
+
+  console.warn(`No public R2 URL configured for bucket "${bucket}". Falling back to endpoint URL.`);
   return `${process.env.R2_ENDPOINT}/${bucket}/${key}`;
 }
 
