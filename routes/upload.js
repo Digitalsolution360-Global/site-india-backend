@@ -46,7 +46,7 @@ router.post('/blog-image', authMiddleware, upload.single('image'), async (req, r
 
 /* ═══════════════════════════════════════════════════════════════════
    POST /api/upload/resume  (Public — career applicants)
-   Upload a resume PDF/DOC to the resume R2 bucket.
+   Upload a resume PDF to the resume R2 bucket.
    Returns the URL.
    ═══════════════════════════════════════════════════════════════════ */
 router.post('/resume', upload.single('resume'), async (req, res) => {
@@ -55,17 +55,15 @@ router.post('/resume', upload.single('resume'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'No resume file provided' });
     }
 
-    const allowed = [
-      'application/pdf',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    ];
-    if (!allowed.includes(req.file.mimetype)) {
-      return res.status(400).json({ success: false, message: 'Only PDF and DOC/DOCX files are allowed' });
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const isPdfMime = req.file.mimetype === 'application/pdf';
+    const isPdfExt = ext === '.pdf';
+    if (!isPdfMime && !isPdfExt) {
+      return res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
     }
 
     // Sanitize original filename
-    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.[^.]+$/, '.pdf');
     const key = `resumes/${Date.now()}-${safeName}`;
 
     const url = await uploadToR2(
