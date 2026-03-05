@@ -37,4 +37,17 @@ router.get('/:category/cities', async (req, res) => {
   }
 });
 
+// ─── GET /api/market/:category/metrocities ───────────────────────
+// Returns flat list of all metro cities for a category
+router.get('/:category/metrocities', async (req, res) => {
+  try {
+    const { category } = req.params;
+    const metros = await db.getAllMetroCitiesByCategory(category);
+    res.json({ success: true, data: metros });
+  } catch (error) {
+    console.error('Error fetching metro cities by category:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch metro cities' });
+  }
+});
+
 module.exports = router;
