@@ -51,4 +51,20 @@ router.get('/:slug/cities', async (req, res) => {
   }
 });
 
+// ─── GET /api/states/:slug/all-cities ────────────────────────────
+// Returns all cities + metro cities for a state, grouped by category
+router.get('/:slug/all-cities', async (req, res) => {
+  try {
+    const state = await db.getStateBySlug(req.params.slug);
+    if (!state) {
+      return res.status(404).json({ success: false, message: 'State not found' });
+    }
+    const grouped = await db.getAllCitiesByState(state.state_id);
+    res.json({ success: true, data: { state, categories: grouped } });
+  } catch (error) {
+    console.error('Error fetching all cities for state:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch cities' });
+  }
+});
+
 module.exports = router;

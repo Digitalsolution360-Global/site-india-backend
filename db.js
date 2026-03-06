@@ -286,6 +286,43 @@ async function getCitiesByStateId(stateId) {
   return await query(sql, [stateId]);
 }
 
+// ─── All cities + metro cities for a state, grouped by category ──
+
+async function getAllCitiesByState(stateId) {
+  const citiesSql = `
+    SELECT c.city_id, c.city, c.city_slug, c.category_name
+    FROM citys c
+    WHERE c.state_id = ?
+    ORDER BY c.category_name ASC, c.city ASC
+  `;
+  const cities = await query(citiesSql, [stateId]);
+
+  const metroCitiesSql = `
+    SELECT m.metrocity AS city, m.metrocity_slug AS city_slug, m.category_name
+    FROM metrocitys m
+    JOIN citys c ON m.city_id = c.city_id
+    WHERE c.state_id = ?
+    ORDER BY m.category_name ASC, m.metrocity ASC
+  `;
+  const metros = await query(metroCitiesSql, [stateId]);
+
+  const grouped = {};
+  [...cities, ...metros].forEach(row => {
+    if (!grouped[row.category_name]) grouped[row.category_name] = [];
+    grouped[row.category_name].push({ name: row.city, slug: row.city_slug });
+  });
+
+  // Sort cities within each category and deduplicate
+  Object.keys(grouped).forEach(cat => {
+    const seen = new Set();
+    grouped[cat] = grouped[cat]
+      .filter(c => { if (seen.has(c.slug)) return false; seen.add(c.slug); return true; })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  return grouped;
+}
+
 // ─── Posts / Blog Functions ───────────────────────────────────────
 async function getAllPosts(page = 1, limit = 12, categoryId = null) {
   const offset = (page - 1) * limit;
@@ -362,6 +399,7 @@ module.exports = {
   getAllMetroCitiesByCategory,
   getSearchDropdownData,
   getCitiesByStateId,
+  getAllCitiesByState,
   getAllPosts,
   getPostsCount,
   getPostBySlug,
