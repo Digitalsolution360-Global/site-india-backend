@@ -2,30 +2,50 @@ const mysql = require('mysql2/promise');
 
 let pool = null;
 
+function createPool() {
+  return mysql.createPool({
+    host: process.env.DB_HOST,
+    port: parseInt(process.env.DB_PORT || '3306'),
+    database: process.env.DB_DATABASE,
+    user: process.env.DB_USERNAME,
+    password: process.env.DB_PASSWORD,
+    waitForConnections: true,
+    connectionLimit: 3,      // keep low for serverless
+    queueLimit: 0,
+    connectTimeout: 30000,   // 30 s TCP connect timeout
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+  });
+}
+
 function getPool() {
-  if (!pool) {
-    pool = mysql.createPool({
-      host: process.env.DB_HOST,
-      port: parseInt(process.env.DB_PORT || '3306'),
-      database: process.env.DB_DATABASE,
-      user: process.env.DB_USERNAME,
-      password: process.env.DB_PASSWORD,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0
-    });
-  }
+  if (!pool) pool = createPool();
   return pool;
 }
 
 async function query(sql, params = []) {
-  try {
-    const connection = getPool();
-    const [results] = await connection.execute(sql, params);
-    return results;
-  } catch (error) {
-    console.error('Database query error:', error);
-    throw error;
+  let attempts = 0;
+  while (attempts < 2) {
+    try {
+      const [results] = await getPool().execute(sql, params);
+      return results;
+    } catch (error) {
+      attempts++;
+      // On a stale-pool / timeout error, destroy the pool and retry once
+      if (
+        attempts < 2 &&
+        (error.code === 'ETIMEDOUT' ||
+          error.code === 'ECONNRESET' ||
+          error.code === 'PROTOCOL_CONNECTION_LOST')
+      ) {
+        console.warn('DB connection error, resetting pool and retrying…', error.code);
+        try { await pool.end(); } catch (_) {}
+        pool = createPool();
+        continue;
+      }
+      console.error('Database query error:', error);
+      throw error;
+    }
   }
 }
 
