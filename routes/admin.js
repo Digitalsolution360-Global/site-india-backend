@@ -1,7 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const multer = require('multer');
+const XLSX = require('xlsx');
 const { authMiddleware } = require('../middleware/auth');
+
+const bulkUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 8 * 1024 * 1024 },
+});
 
 // All admin routes require auth
 router.use(authMiddleware);
@@ -147,6 +154,297 @@ const TABLE_CONFIG = {
     },
 };
 
+const BULK_UPLOAD_ALLOWED = new Set(['states', 'citys', 'metrocitys']);
+
+const BULK_TEMPLATES = {
+    states: {
+        headers: [
+            'name', 'slug', 'image', 'descritpion',
+            'meta_title', 'meta_description', 'meta_keywords',
+            'navbar_status', 'status'
+        ],
+        sample: {
+            name: 'Uttar Pradesh',
+            slug: 'uttar-pradesh',
+            image: 'https://example.com/state.webp',
+            descritpion: 'Digital services across Uttar Pradesh',
+            meta_title: 'Digital Services in Uttar Pradesh',
+            meta_description: 'Professional digital services across major cities in Uttar Pradesh.',
+            meta_keywords: 'digital marketing uttar pradesh, seo uttar pradesh',
+            navbar_status: '1',
+            status: '1'
+        }
+    },
+    citys: {
+        headers: [
+            'state_slug', 'city', 'category_name', 'city_name', 'city_slug',
+            'city_description', 'image', 'yt_iframe_link',
+            'meta_title', 'meta_description', 'meta_keyword', 'status'
+        ],
+        sample: {
+            state_slug: 'uttar-pradesh',
+            city: 'Noida',
+            category_name: 'Digital Marketing',
+            city_name: 'Best Digital Marketing Services in Noida',
+            city_slug: 'digital-marketing-noida',
+            city_description: 'Category focused digital marketing services in Noida.',
+            image: 'https://example.com/noida.webp',
+            yt_iframe_link: 'https://www.youtube.com/embed/xxxxxxxxxxx',
+            meta_title: 'Digital Marketing in Noida',
+            meta_description: 'Result-driven digital marketing services in Noida.',
+            meta_keyword: 'digital marketing noida, seo noida',
+            status: '1'
+        }
+    },
+    metrocitys: {
+        headers: [
+            'city_slug', 'metrocity', 'category_name', 'metrocity_name', 'metrocity_slug',
+            'metrocity_description', 'image', 'yt_iframe_link',
+            'meta_title', 'meta_description', 'meta_keyword', 'status'
+        ],
+        sample: {
+            city_slug: 'digital-marketing-noida',
+            metrocity: 'Sector 62',
+            category_name: 'Digital Marketing',
+            metrocity_name: 'Digital Marketing Services in Sector 62 Noida',
+            metrocity_slug: 'digital-marketing-sector-62-noida',
+            metrocity_description: 'Local digital marketing services for Sector 62 businesses.',
+            image: 'https://example.com/sector-62.webp',
+            yt_iframe_link: 'https://www.youtube.com/embed/xxxxxxxxxxx',
+            meta_title: 'Digital Marketing in Sector 62 Noida',
+            meta_description: 'Targeted digital marketing services in Sector 62, Noida.',
+            meta_keyword: 'digital marketing sector 62 noida',
+            status: '1'
+        }
+    }
+};
+
+function toText(val) {
+    if (val === undefined || val === null) return '';
+    return String(val).trim();
+}
+
+function toFlag(val, fallback = 1) {
+    const v = toText(val).toLowerCase();
+    if (v === '') return fallback;
+    if (['1', 'true', 'yes', 'active'].includes(v)) return 1;
+    if (['0', 'false', 'no', 'inactive'].includes(v)) return 0;
+    return fallback;
+}
+
+function csvEscape(value) {
+    const v = String(value ?? '');
+    if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+        return `"${v.replace(/"/g, '""')}"`;
+    }
+    return v;
+}
+
+function buildTemplateCsv(table) {
+    const template = BULK_TEMPLATES[table];
+    if (!template) return null;
+    const headerRow = template.headers.join(',');
+    const sampleRow = template.headers.map((h) => csvEscape(template.sample[h] || '')).join(',');
+    return `${headerRow}\n${sampleRow}\n`;
+}
+
+function normalizeKeys(row) {
+    const out = {};
+    Object.entries(row || {}).forEach(([k, v]) => {
+        out[String(k || '').trim().toLowerCase()] = v;
+    });
+    return out;
+}
+
+function buildInsertQuery(table, payload) {
+    const cols = Object.keys(payload);
+    const placeholders = cols.map(() => '?').join(', ');
+    return {
+        sql: `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`,
+        values: cols.map((c) => payload[c]),
+    };
+}
+
+function buildUpdateQuery(table, payload, whereClause, whereValues) {
+    const cols = Object.keys(payload);
+    const setClause = cols.map((c) => `${c} = ?`).join(', ');
+    return {
+        sql: `UPDATE ${table} SET ${setClause} WHERE ${whereClause}`,
+        values: [...cols.map((c) => payload[c]), ...whereValues],
+    };
+}
+
+async function processStateRow(rawRow, rowNumber, mode, dryRun, userId) {
+    const row = normalizeKeys(rawRow);
+    const name = toText(row.name);
+    const slug = toText(row.slug);
+
+    if (!name || !slug) {
+        return { ok: false, rowNumber, message: 'name and slug are required.' };
+    }
+
+    const existing = await db.query('SELECT state_id FROM states WHERE slug = ? LIMIT 1', [slug]);
+    const now = new Date();
+
+    const payload = {
+        name,
+        slug,
+        image: toText(row.image),
+        descritpion: toText(row.descritpion || row.description),
+        meta_title: toText(row.meta_title),
+        meta_description: toText(row.meta_description),
+        meta_keywords: toText(row.meta_keywords),
+        navbar_status: toFlag(row.navbar_status, 1),
+        status: toFlag(row.status, 1),
+        updated_at: now,
+    };
+
+    if (!existing.length) {
+        const insertPayload = { ...payload, created_at: now, created_by: String(userId) };
+        if (!dryRun) {
+            const q = buildInsertQuery('states', insertPayload);
+            await db.query(q.sql, q.values);
+        }
+        return { ok: true, rowNumber, action: 'inserted', key: slug };
+    }
+
+    if (mode === 'insert') {
+        return { ok: false, rowNumber, message: `state already exists for slug: ${slug}` };
+    }
+
+    if (!dryRun) {
+        const q = buildUpdateQuery('states', payload, 'state_id = ?', [existing[0].state_id]);
+        await db.query(q.sql, q.values);
+    }
+    return { ok: true, rowNumber, action: 'updated', key: slug };
+}
+
+async function processCityRow(rawRow, rowNumber, mode, dryRun, userId, stateMap) {
+    const row = normalizeKeys(rawRow);
+    const stateSlug = toText(row.state_slug);
+    const city = toText(row.city);
+    const categoryName = toText(row.category_name);
+    const cityName = toText(row.city_name);
+    const citySlug = toText(row.city_slug);
+
+    if (!stateSlug || !city || !categoryName || !cityName || !citySlug) {
+        return {
+            ok: false,
+            rowNumber,
+            message: 'state_slug, city, category_name, city_name, and city_slug are required.'
+        };
+    }
+
+    const stateId = stateMap.get(stateSlug);
+    if (!stateId) {
+        return { ok: false, rowNumber, message: `invalid state_slug: ${stateSlug}` };
+    }
+
+    const existing = await db.query(
+        'SELECT city_id FROM citys WHERE city_slug = ? AND category_name = ? LIMIT 1',
+        [citySlug, categoryName]
+    );
+
+    const now = new Date();
+    const payload = {
+        state_id: stateId,
+        city,
+        category_name: categoryName,
+        city_name: cityName,
+        city_slug: citySlug,
+        city_description: toText(row.city_description),
+        image: toText(row.image),
+        yt_iframe_link: toText(row.yt_iframe_link),
+        meta_title: toText(row.meta_title),
+        meta_description: toText(row.meta_description),
+        meta_keyword: toText(row.meta_keyword),
+        status: toFlag(row.status, 1),
+        updated_at: now,
+    };
+
+    if (!existing.length) {
+        const insertPayload = { ...payload, created_at: now, created_by: String(userId) };
+        if (!dryRun) {
+            const q = buildInsertQuery('citys', insertPayload);
+            await db.query(q.sql, q.values);
+        }
+        return { ok: true, rowNumber, action: 'inserted', key: citySlug };
+    }
+
+    if (mode === 'insert') {
+        return { ok: false, rowNumber, message: `city already exists for city_slug + category_name: ${citySlug} / ${categoryName}` };
+    }
+
+    if (!dryRun) {
+        const q = buildUpdateQuery('citys', payload, 'city_id = ?', [existing[0].city_id]);
+        await db.query(q.sql, q.values);
+    }
+    return { ok: true, rowNumber, action: 'updated', key: citySlug };
+}
+
+async function processMetroCityRow(rawRow, rowNumber, mode, dryRun, userId, cityMap) {
+    const row = normalizeKeys(rawRow);
+    const citySlug = toText(row.city_slug);
+    const metrocity = toText(row.metrocity);
+    const categoryName = toText(row.category_name);
+    const metrocityName = toText(row.metrocity_name);
+    const metrocitySlug = toText(row.metrocity_slug);
+
+    if (!citySlug || !metrocity || !categoryName || !metrocityName || !metrocitySlug) {
+        return {
+            ok: false,
+            rowNumber,
+            message: 'city_slug, metrocity, category_name, metrocity_name, and metrocity_slug are required.'
+        };
+    }
+
+    const cityId = cityMap.get(citySlug);
+    if (!cityId) {
+        return { ok: false, rowNumber, message: `invalid city_slug: ${citySlug}` };
+    }
+
+    const existing = await db.query(
+        'SELECT metrocity_id FROM metrocitys WHERE metrocity_slug = ? AND category_name = ? LIMIT 1',
+        [metrocitySlug, categoryName]
+    );
+
+    const now = new Date();
+    const payload = {
+        city_id: cityId,
+        metrocity,
+        category_name: categoryName,
+        metrocity_name: metrocityName,
+        metrocity_slug: metrocitySlug,
+        metrocity_description: toText(row.metrocity_description),
+        image: toText(row.image),
+        yt_iframe_link: toText(row.yt_iframe_link),
+        meta_title: toText(row.meta_title),
+        meta_description: toText(row.meta_description),
+        meta_keyword: toText(row.meta_keyword),
+        status: toFlag(row.status, 1),
+        updated_at: now,
+    };
+
+    if (!existing.length) {
+        const insertPayload = { ...payload, created_at: now, created_by: String(userId) };
+        if (!dryRun) {
+            const q = buildInsertQuery('metrocitys', insertPayload);
+            await db.query(q.sql, q.values);
+        }
+        return { ok: true, rowNumber, action: 'inserted', key: metrocitySlug };
+    }
+
+    if (mode === 'insert') {
+        return { ok: false, rowNumber, message: `metro city already exists for metrocity_slug + category_name: ${metrocitySlug} / ${categoryName}` };
+    }
+
+    if (!dryRun) {
+        const q = buildUpdateQuery('metrocitys', payload, 'metrocity_id = ?', [existing[0].metrocity_id]);
+        await db.query(q.sql, q.values);
+    }
+    return { ok: true, rowNumber, action: 'updated', key: metrocitySlug };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    DASHBOARD ANALYTICS
    ═══════════════════════════════════════════════════════════════════ */
@@ -242,6 +540,114 @@ router.get('/tables', (req, res) => {
         searchable: cfg.searchable,
     }));
     res.json({ success: true, data: tables });
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   BULK UPLOAD (states, citys, metrocitys)
+   ═══════════════════════════════════════════════════════════════════ */
+
+router.get('/bulk-upload/template/:table', async (req, res) => {
+    const table = req.params.table;
+    if (!BULK_UPLOAD_ALLOWED.has(table)) {
+        return res.status(400).json({ success: false, message: 'Bulk upload not enabled for this table.' });
+    }
+
+    const csv = buildTemplateCsv(table);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${table}-bulk-template.csv"`);
+    return res.send(csv);
+});
+
+router.post('/bulk-upload/:table', bulkUpload.single('file'), async (req, res) => {
+    const table = req.params.table;
+    if (!BULK_UPLOAD_ALLOWED.has(table)) {
+        return res.status(400).json({ success: false, message: 'Bulk upload not enabled for this table.' });
+    }
+
+    if (!req.file?.buffer) {
+        return res.status(400).json({ success: false, message: 'Please upload a CSV or XLSX file in the file field.' });
+    }
+
+    const mode = req.body.mode === 'insert' ? 'insert' : 'upsert';
+    const dryRun = ['1', 'true', 'yes'].includes(String(req.body.dryRun || '').toLowerCase());
+
+    try {
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const firstSheet = workbook.SheetNames[0];
+        if (!firstSheet) {
+            return res.status(400).json({ success: false, message: 'File is empty.' });
+        }
+
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], {
+            defval: '',
+            raw: false,
+        });
+
+        if (!rows.length) {
+            return res.status(400).json({ success: false, message: 'No rows found. Please add at least one data row.' });
+        }
+
+        if (rows.length > 2000) {
+            return res.status(400).json({ success: false, message: 'Maximum 2000 rows allowed per upload.' });
+        }
+
+        const stateRows = table === 'citys'
+            ? await db.query('SELECT state_id, slug FROM states')
+            : [];
+        const stateMap = new Map(stateRows.map((s) => [toText(s.slug), Number(s.state_id)]));
+
+        const cityRows = table === 'metrocitys'
+            ? await db.query('SELECT city_id, city_slug FROM citys')
+            : [];
+        const cityMap = new Map(cityRows.map((c) => [toText(c.city_slug), Number(c.city_id)]));
+
+        const summary = {
+            totalRows: rows.length,
+            inserted: 0,
+            updated: 0,
+            failed: 0,
+        };
+        const failures = [];
+
+        for (let i = 0; i < rows.length; i++) {
+            const rowNumber = i + 2;
+            let result;
+
+            if (table === 'states') {
+                result = await processStateRow(rows[i], rowNumber, mode, dryRun, req.user.id);
+            } else if (table === 'citys') {
+                result = await processCityRow(rows[i], rowNumber, mode, dryRun, req.user.id, stateMap);
+            } else {
+                result = await processMetroCityRow(rows[i], rowNumber, mode, dryRun, req.user.id, cityMap);
+            }
+
+            if (!result.ok) {
+                summary.failed += 1;
+                failures.push({ rowNumber, message: result.message });
+                continue;
+            }
+
+            if (result.action === 'inserted') summary.inserted += 1;
+            if (result.action === 'updated') summary.updated += 1;
+        }
+
+        return res.json({
+            success: true,
+            message: dryRun
+                ? 'Validation completed. No database changes made.'
+                : 'Bulk upload completed.',
+            data: {
+                mode,
+                dryRun,
+                summary,
+                failures: failures.slice(0, 300),
+                hasMoreFailures: failures.length > 300,
+            }
+        });
+    } catch (error) {
+        console.error('Bulk upload error:', error);
+        return res.status(500).json({ success: false, message: 'Bulk upload failed. Please check file format and data.' });
+    }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
