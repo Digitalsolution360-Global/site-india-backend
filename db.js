@@ -183,7 +183,8 @@ async function getStatesWithCitiesByCategory(category) {
     }
     cityMap[city.state_id].push({
       name: city.city,
-      slug: city.city_slug
+      slug: city.city_slug,
+      isMetro: false
     });
   });
 
@@ -194,7 +195,8 @@ async function getStatesWithCitiesByCategory(category) {
     }
     cityMap[metro.state_id].push({
       name: metro.metrocity,
-      slug: metro.metrocity_slug
+      slug: metro.metrocity_slug,
+      isMetro: true
     });
   });
 
@@ -310,7 +312,7 @@ async function getCitiesByStateId(stateId) {
 
 async function getAllCitiesByState(stateId) {
   const citiesSql = `
-    SELECT c.city_id, c.city, c.city_slug, c.category_name
+    SELECT c.city_id, c.city, c.city_slug, c.category_name, 0 AS is_metro
     FROM citys c
     WHERE c.state_id = ?
     ORDER BY c.category_name ASC, c.city ASC
@@ -318,7 +320,7 @@ async function getAllCitiesByState(stateId) {
   const cities = await query(citiesSql, [stateId]);
 
   const metroCitiesSql = `
-    SELECT m.metrocity AS city, m.metrocity_slug AS city_slug, m.category_name
+    SELECT m.metrocity AS city, m.metrocity_slug AS city_slug, m.category_name, 1 AS is_metro
     FROM metrocitys m
     JOIN citys c ON m.city_id = c.city_id
     WHERE c.state_id = ?
@@ -329,7 +331,11 @@ async function getAllCitiesByState(stateId) {
   const grouped = {};
   [...cities, ...metros].forEach(row => {
     if (!grouped[row.category_name]) grouped[row.category_name] = [];
-    grouped[row.category_name].push({ name: row.city, slug: row.city_slug });
+    grouped[row.category_name].push({
+      name: row.city,
+      slug: row.city_slug,
+      isMetro: Boolean(row.is_metro)
+    });
   });
 
   // Sort cities within each category and deduplicate
