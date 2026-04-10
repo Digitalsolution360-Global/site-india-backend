@@ -1,18 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const readCache = require('../utils/readCache');
+const { apiPublicCache } = require('../middleware/apiPublicCache');
 
 // GET /api/posts — List posts (paginated, optional category filter)
-router.get('/', async (req, res) => {
+router.get('/', apiPublicCache(30), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 12;
-    const categoryId = req.query.category ? parseInt(req.query.category) : null;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 12));
+    const rawCat = req.query.category ? parseInt(req.query.category, 10) : null;
+    const categoryId = Number.isFinite(rawCat) ? rawCat : null;
 
-    const [posts, total] = await Promise.all([
-      db.getAllPosts(page, limit, categoryId),
-      db.getPostsCount(categoryId)
-    ]);
+    const cacheKey = `posts:list:p${page}:l${limit}:c${categoryId ?? 'all'}`;
+    const { posts, total } = await readCache.getOrSet(cacheKey, () =>
+      db.getPostsListWithTotal(page, limit, categoryId)
+    );
 
     res.json({
       success: true,
@@ -31,9 +34,9 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/posts/categories — List categories with post counts
-router.get('/categories', async (req, res) => {
+router.get('/categories', apiPublicCache(60), async (req, res) => {
   try {
-    const categories = await db.getPostCategories();
+    const categories = await readCache.getOrSet('posts:categories', () => db.getPostCategories());
     res.json({ success: true, data: categories });
   } catch (error) {
     console.error('Error fetching post categories:', error);

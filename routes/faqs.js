@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const readCache = require('../utils/readCache');
+const { apiPublicCache } = require('../middleware/apiPublicCache');
 
 /**
  * GET /api/faqs?category=...&page_slug=...
@@ -10,7 +12,7 @@ const db = require('../db');
  *   2. If none found (or page_slug not provided), fall back to category defaults (page_slug IS NULL)
  *   3. If page_slug = 'market', only return market-page FAQs (no fallback)
  */
-router.get('/', async (req, res) => {
+router.get('/', apiPublicCache(60), async (req, res) => {
     try {
         const { category, page_slug } = req.query;
 
@@ -18,47 +20,48 @@ router.get('/', async (req, res) => {
             return res.status(400).json({ success: false, message: 'category is required' });
         }
 
-        let faqs = [];
+        const slugKey = page_slug === undefined || page_slug === '' ? '_default' : String(page_slug);
+        const faqs = await readCache.getOrSet(`faqs:${category}:${slugKey}`, async () => {
+            let rows = [];
 
-        if (page_slug === 'market') {
-            // Market pages — only return market-specific FAQs
-            faqs = await db.query(
-                `SELECT id, category_name, page_slug, question, answer, sort_order
+            if (page_slug === 'market') {
+                rows = await db.query(
+                    `SELECT id, category_name, page_slug, question, answer, sort_order
          FROM faqs
          WHERE category_name = ? AND page_slug = 'market' AND status = 0
          ORDER BY sort_order ASC`,
-                [category]
-            );
-        } else if (page_slug) {
-            // City-specific override — try page_slug first, fall back to category default
-            faqs = await db.query(
-                `SELECT id, category_name, page_slug, question, answer, sort_order
+                    [category]
+                );
+            } else if (page_slug) {
+                rows = await db.query(
+                    `SELECT id, category_name, page_slug, question, answer, sort_order
          FROM faqs
          WHERE category_name = ? AND page_slug = ? AND status = 0
          ORDER BY sort_order ASC`,
-                [category, page_slug]
-            );
+                    [category, page_slug]
+                );
 
-            if (faqs.length === 0) {
-                // Fall back to category defaults
-                faqs = await db.query(
-                    `SELECT id, category_name, page_slug, question, answer, sort_order
+                if (rows.length === 0) {
+                    rows = await db.query(
+                        `SELECT id, category_name, page_slug, question, answer, sort_order
            FROM faqs
            WHERE category_name = ? AND page_slug IS NULL AND status = 0
            ORDER BY sort_order ASC`,
-                    [category]
-                );
-            }
-        } else {
-            // No page_slug — return category defaults
-            faqs = await db.query(
-                `SELECT id, category_name, page_slug, question, answer, sort_order
+                        [category]
+                    );
+                }
+            } else {
+                rows = await db.query(
+                    `SELECT id, category_name, page_slug, question, answer, sort_order
          FROM faqs
          WHERE category_name = ? AND page_slug IS NULL AND status = 0
          ORDER BY sort_order ASC`,
-                [category]
-            );
-        }
+                    [category]
+                );
+            }
+
+            return rows;
+        });
 
         res.json({ success: true, data: faqs });
     } catch (err) {
@@ -71,10 +74,12 @@ router.get('/', async (req, res) => {
  * GET /api/faqs/categories
  * Returns distinct category names that have FAQs
  */
-router.get('/categories', async (req, res) => {
+router.get('/categories', apiPublicCache(120), async (req, res) => {
     try {
-        const rows = await db.query(
-            `SELECT DISTINCT category_name FROM faqs WHERE status = 0 ORDER BY category_name`
+        const rows = await readCache.getOrSet('faqs:categories', () =>
+            db.query(
+                `SELECT DISTINCT category_name FROM faqs WHERE status = 0 ORDER BY category_name`
+            )
         );
         res.json({ success: true, data: rows.map(r => r.category_name) });
     } catch (err) {
@@ -87,17 +92,19 @@ router.get('/categories', async (req, res) => {
  * GET /api/faqs/overrides
  * Returns list of page_slugs that have custom FAQ overrides (not NULL, not 'market')
  */
-router.get('/overrides', async (req, res) => {
+router.get('/overrides', apiPublicCache(120), async (req, res) => {
     try {
         const { category } = req.query;
-        let sql = `SELECT DISTINCT page_slug, category_name FROM faqs WHERE page_slug IS NOT NULL AND page_slug != 'market' AND status = 0`;
-        const params = [];
-        if (category) {
-            sql += ' AND category_name = ?';
-            params.push(category);
-        }
-        sql += ' ORDER BY category_name, page_slug';
-        const rows = await db.query(sql, params);
+        const rows = await readCache.getOrSet(`faqs:overrides:${category || 'all'}`, async () => {
+            let sql = `SELECT DISTINCT page_slug, category_name FROM faqs WHERE page_slug IS NOT NULL AND page_slug != 'market' AND status = 0`;
+            const params = [];
+            if (category) {
+                sql += ' AND category_name = ?';
+                params.push(category);
+            }
+            sql += ' ORDER BY category_name, page_slug';
+            return db.query(sql, params);
+        });
         res.json({ success: true, data: rows });
     } catch (err) {
         console.error('Error fetching FAQ overrides:', err);

@@ -1,6 +1,9 @@
 require('dotenv').config({ path: __dirname + '/.env' });
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
+const readCache = require('./utils/readCache');
+const { apiPublicCache } = require('./middleware/apiPublicCache');
 
 const statesRoutes = require('./routes/states');
 const citiesRoutes = require('./routes/cities');
@@ -17,6 +20,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ─── Middleware ───────────────────────────────────────────────────
+app.use(compression({ threshold: 1024, level: 6 }));
 app.use(cors({
   origin: process.env.FRONTEND_URL,
   credentials: true
@@ -37,9 +41,9 @@ app.use('/api/contacts', contactsRoutes);
 
 // ─── Categories Endpoint ─────────────────────────────────────────
 const db = require('./db');
-app.get('/api/categories', async (req, res) => {
+app.get('/api/categories', apiPublicCache(120), async (req, res) => {
   try {
-    const categories = await db.getAvailableCategories();
+    const categories = await readCache.getOrSet('categories', () => db.getAvailableCategories());
     res.json({ success: true, data: categories, categoryMap: db.CATEGORY_MAP });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch categories' });
@@ -47,18 +51,21 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // ─── Search Dropdown Endpoints ───────────────────────────────────
-app.get('/api/search/options', async (req, res) => {
+app.get('/api/search/options', apiPublicCache(120), async (req, res) => {
   try {
-    const data = await db.getSearchDropdownData();
+    const data = await readCache.getOrSet('search:options', () => db.getSearchDropdownData());
     res.json({ success: true, data });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch search options' });
   }
 });
 
-app.get('/api/search/cities/:stateId', async (req, res) => {
+app.get('/api/search/cities/:stateId', apiPublicCache(120), async (req, res) => {
   try {
-    const cities = await db.getCitiesByStateId(req.params.stateId);
+    const sid = String(req.params.stateId);
+    const cities = await readCache.getOrSet(`search:cities:${sid}`, () =>
+      db.getCitiesByStateId(sid)
+    );
     res.json({ success: true, data: cities });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch cities' });

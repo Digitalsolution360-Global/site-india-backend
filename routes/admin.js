@@ -4,6 +4,7 @@ const db = require('../db');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const { authMiddleware } = require('../middleware/auth');
+const readCache = require('../utils/readCache');
 
 const bulkUpload = multer({
     storage: multer.memoryStorage(),
@@ -631,6 +632,9 @@ router.post('/bulk-upload/:table', bulkUpload.single('file'), async (req, res) =
             if (result.action === 'updated') summary.updated += 1;
         }
 
+        if (!dryRun) {
+            readCache.invalidateAll();
+        }
         return res.json({
             success: true,
             message: dryRun
@@ -749,6 +753,7 @@ router.post('/:table', async (req, res) => {
             allValues
         );
 
+        readCache.invalidateAll();
         res.status(201).json({ success: true, message: 'Record created.', id: result.insertId });
     } catch (error) {
         console.error(`Create ${req.params.table} error:`, error);
@@ -781,6 +786,7 @@ router.put('/:table/:id', async (req, res) => {
             allValues
         );
 
+        readCache.invalidateAll();
         res.json({ success: true, message: 'Record updated.' });
     } catch (error) {
         console.error(`Update ${req.params.table} error:`, error);
@@ -798,6 +804,7 @@ router.delete('/:table/:id', async (req, res) => {
             `DELETE FROM ${req.params.table} WHERE ${config.primaryKey} = ?`,
             [req.params.id]
         );
+        readCache.invalidateAll();
         res.json({ success: true, message: 'Record deleted.' });
     } catch (error) {
         console.error(`Delete ${req.params.table} error:`, error);

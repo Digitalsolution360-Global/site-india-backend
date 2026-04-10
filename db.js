@@ -3,6 +3,10 @@ const mysql = require('mysql2/promise');
 let pool = null;
 
 function createPool() {
+  const limit = Math.min(
+    50,
+    Math.max(1, parseInt(process.env.DB_CONNECTION_LIMIT || '10', 10) || 10)
+  );
   return mysql.createPool({
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT || '3306'),
@@ -10,7 +14,7 @@ function createPool() {
     user: process.env.DB_USERNAME,
     password: process.env.DB_PASSWORD,
     waitForConnections: true,
-    connectionLimit: 3,      // keep low for serverless
+    connectionLimit: limit, // override with DB_CONNECTION_LIMIT (e.g. 3 for strict serverless)
     queueLimit: 0,
     connectTimeout: 30000,   // 30 s TCP connect timeout
     enableKeepAlive: true,
@@ -148,7 +152,7 @@ async function getCityBySlugAndCategory(citySlug, category) {
 async function getStatesWithCitiesByCategory(category) {
   const categoryName = resolveCategory(category);
 
-  const sql = `
+  const statesSql = `
     SELECT DISTINCT s.state_id, s.name, s.slug, s.image,
            s.descritpion AS description
     FROM states s
@@ -156,25 +160,16 @@ async function getStatesWithCitiesByCategory(category) {
     WHERE c.category_name = ?
     ORDER BY s.name ASC
   `;
-  const states = await query(sql, [categoryName]);
-
   const citiesSql = `
     SELECT city_id, state_id, city, city_slug
     FROM citys
     WHERE category_name = ?
     ORDER BY city ASC
   `;
-  const allCities = await query(citiesSql, [categoryName]);
-
-  // Also fetch metro cities for each state
-  const metroCitiesSql = `
-    SELECT m.metrocity, m.metrocity_slug, c.state_id
-    FROM metrocitys m
-    JOIN citys c ON m.city_id = c.city_id
-    WHERE m.category_name = ?
-    ORDER BY m.metrocity ASC
-  `;
-  const allMetroCities = await query(metroCitiesSql, [categoryName]);
+  const [states, allCities] = await Promise.all([
+    query(statesSql, [categoryName]),
+    query(citiesSql, [categoryName]),
+  ]);
 
   const cityMap = {};
   allCities.forEach(city => {
@@ -327,23 +322,55 @@ async function getAllCitiesByState(stateId) {
 }
 
 // ─── Posts / Blog Functions ───────────────────────────────────────
-async function getAllPosts(page = 1, limit = 12, categoryId = null) {
-  const offset = (page - 1) * limit;
+// LIMIT/OFFSET as prepared params can trigger ER_WRONG_ARGUMENTS on some MySQL builds;
+// use bounded integers inlined after sanitization.
+function sanitizePagination(page, limit) {
+  const lim = Math.max(1, Math.min(100, Math.floor(Number(limit)) || 12));
+  const pg = Math.max(1, Math.floor(Number(page)) || 1);
+  const offset = (pg - 1) * lim;
+  return { limit: lim, offset };
+}
+
+// Listing cards only — omit post_description (large HTML body); full body comes from getPostBySlug.
+const POST_LIST_COLUMNS = `
+  p.post_id, p.category_id, p.post_name, p.post_slug, p.image,
+  p.meta_title, p.meta_description, p.created_at,
+  c.name AS category_name, c.slug AS category_slug`;
+
+/**
+ * Paginated post list + total count in one round-trip (count via scalar subquery on each row;
+ * MySQL optimizes this to a single aggregation). Empty page falls back to a tiny COUNT query.
+ */
+async function getPostsListWithTotal(page = 1, limit = 12, categoryId = null) {
+  const { limit: lim, offset } = sanitizePagination(page, limit);
   let sql, params;
   if (categoryId) {
-    sql = `SELECT p.*, c.name as category_name, c.slug as category_slug
-           FROM posts p LEFT JOIN categories c ON p.category_id = c.category_id
+    sql = `SELECT ${POST_LIST_COLUMNS},
+             (SELECT COUNT(*) FROM posts WHERE status = 0 AND category_id = ?) AS _total
+           FROM posts p
+           LEFT JOIN categories c ON p.category_id = c.category_id
            WHERE p.status = 0 AND p.category_id = ?
-           ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
-    params = [categoryId, limit, offset];
+           ORDER BY p.created_at DESC
+           LIMIT ${lim} OFFSET ${offset}`;
+    params = [categoryId, categoryId];
   } else {
-    sql = `SELECT p.*, c.name as category_name, c.slug as category_slug
-           FROM posts p LEFT JOIN categories c ON p.category_id = c.category_id
+    sql = `SELECT ${POST_LIST_COLUMNS},
+             (SELECT COUNT(*) FROM posts WHERE status = 0) AS _total
+           FROM posts p
+           LEFT JOIN categories c ON p.category_id = c.category_id
            WHERE p.status = 0
-           ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
-    params = [limit, offset];
+           ORDER BY p.created_at DESC
+           LIMIT ${lim} OFFSET ${offset}`;
+    params = [];
   }
-  return await query(sql, params);
+  const rows = await query(sql, params);
+  if (rows.length) {
+    const total = Number(rows[0]._total);
+    const posts = rows.map(({ _total, ...rest }) => rest);
+    return { posts, total };
+  }
+  const total = await getPostsCount(categoryId);
+  return { posts: [], total };
 }
 
 async function getPostsCount(categoryId = null) {
@@ -368,17 +395,18 @@ async function getPostBySlug(slug) {
 }
 
 async function getRelatedPosts(categoryId, excludePostId, limit = 3) {
-  const sql = `SELECT p.*, c.name as category_name, c.slug as category_slug
+  const lim = Math.max(1, Math.min(50, Math.floor(Number(limit)) || 3));
+  const sql = `SELECT ${POST_LIST_COLUMNS}
                FROM posts p LEFT JOIN categories c ON p.category_id = c.category_id
                WHERE p.status = 0 AND p.category_id = ? AND p.post_id != ?
-               ORDER BY p.created_at DESC LIMIT ?`;
-  return await query(sql, [categoryId, excludePostId, limit]);
+               ORDER BY p.created_at DESC LIMIT ${lim}`;
+  return await query(sql, [categoryId, excludePostId]);
 }
 
 async function getPostCategories() {
-  const sql = `SELECT c.category_id, c.name, c.slug, COUNT(p.post_id) as post_count
-               FROM categories c INNER JOIN posts p ON c.category_id = p.category_id
-               WHERE p.status = 0
+  const sql = `SELECT c.category_id, c.name, c.slug, COUNT(p.post_id) AS post_count
+               FROM categories c
+               INNER JOIN posts p ON c.category_id = p.category_id AND p.status = 0
                GROUP BY c.category_id, c.name, c.slug
                ORDER BY c.name ASC`;
   return await query(sql);
@@ -403,7 +431,7 @@ module.exports = {
   getSearchDropdownData,
   getCitiesByStateId,
   getAllCitiesByState,
-  getAllPosts,
+  getPostsListWithTotal,
   getPostsCount,
   getPostBySlug,
   getRelatedPosts,
