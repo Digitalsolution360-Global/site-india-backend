@@ -62,7 +62,8 @@ const CATEGORY_MAP = {
   'marketing': 'Digital Marketing',
   'social-media': 'Social Media',
   'content-writing': 'Content Writing',
-  'wordpress': 'Wordpress Development'
+  'wordpress': 'Wordpress Development',
+  'app': 'App Development'
 };
 
 function resolveCategory(category) {
